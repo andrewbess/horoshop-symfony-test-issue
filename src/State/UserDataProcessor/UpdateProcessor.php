@@ -12,6 +12,8 @@ use Doctrine\DBAL\Exception as DBALException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\HttpException;
+use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 use Symfony\Component\Serializer\Encoder\JsonEncoder;
 use Symfony\Component\Serializer\Normalizer\ObjectNormalizer;
 use Symfony\Component\Serializer\Serializer;
@@ -28,6 +30,7 @@ class UpdateProcessor
      * @param LoginValidator $userLoginValidator
      * @param PhoneValidator $userPhoneValidator
      * @param PassValidator $userPassValidator
+     * @param UserPasswordHasherInterface $passwordHasher
      * @param EntityManagerInterface $entityManager
      */
     public function __construct(
@@ -35,6 +38,7 @@ class UpdateProcessor
         private readonly LoginValidator $userLoginValidator,
         private readonly PhoneValidator $userPhoneValidator,
         private readonly PassValidator $userPassValidator,
+        private readonly UserPasswordHasherInterface $passwordHasher,
         private readonly EntityManagerInterface $entityManager
     ) {
     }
@@ -60,7 +64,7 @@ class UpdateProcessor
             $user = $this->entityManager->getRepository(User::class)->find($userId);
 
             if ($user === null) {
-                return new Response(content: 'The user by provided ID does not exist.', status: Response::HTTP_NOT_FOUND);
+                throw HttpException::fromStatusCode(statusCode: Response::HTTP_NOT_FOUND, message: 'The user by provided ID does not exist.');
             }
 
             $this->userLoginValidator->validate($userData->login);
@@ -69,19 +73,28 @@ class UpdateProcessor
 
             $user->setLogin($userData->login);
             $user->setPhone($userData->phone);
-            $user->setPass($userData->pass);
+
+            $hashedPassword = $this->passwordHasher->hashPassword(
+                $user,
+                $userData->pass
+            );
+            $user->setPass($hashedPassword);
 
             $this->entityManager->flush();
 
-            return $user;
+            return new UserData(
+                login: $user->getLogin(),
+                phone: $user->getPhone(),
+                pass: 'The password was hashed and will not be able to show.'
+            );
         } catch (ConstraintDefinitionException) {
-            return new Response(content: 'Validation error. Please check the input data and try again.', status: Response::HTTP_BAD_REQUEST);
+            throw HttpException::fromStatusCode(statusCode: Response::HTTP_BAD_REQUEST, message: 'Validation error. Please check the input data and try again.');
         } catch (DBALException\UniqueConstraintViolationException) {
-            return new Response(content: 'The user with the same login already exists. Please fix login and try again.', status: Response::HTTP_UNPROCESSABLE_ENTITY);
+            throw HttpException::fromStatusCode(statusCode: Response::HTTP_UNPROCESSABLE_ENTITY, message: 'The user with the same login already exists. Please fix login and try again.');
         } catch (DBALException) {
-            return new Response(content: 'Something went wrong follow data saving. Please try again later.', status: Response::HTTP_UNPROCESSABLE_ENTITY);
+            throw HttpException::fromStatusCode(statusCode: Response::HTTP_UNPROCESSABLE_ENTITY, message: 'Something went wrong follow data saving. Please try again later.');
         } catch (Throwable) {
-            return new Response(content: 'Something went wrong. Please contact the support service.', status: Response::HTTP_INTERNAL_SERVER_ERROR);
+            throw HttpException::fromStatusCode(statusCode: Response::HTTP_INTERNAL_SERVER_ERROR, message: 'Something went wrong. Please contact the support service.');
         }
     }
 

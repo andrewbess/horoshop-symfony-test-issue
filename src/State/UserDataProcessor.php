@@ -11,6 +11,9 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 
+/**
+ * The common user data processor that delegate action for the necessary processor (CREATE, UPDATE, DELETE)
+ */
 class UserDataProcessor implements ProcessorInterface
 {
     private const AVAILABLE_OPERATIONS = [
@@ -19,6 +22,11 @@ class UserDataProcessor implements ProcessorInterface
         Request::METHOD_DELETE
     ];
 
+    /**
+     * @param UpdateUserProcessor $updateUserProcessor
+     * @param CreateUserProcessor $createUserProcessor
+     * @param DeleteProcessor $deleteUserProcessor
+     */
     public function __construct(
         private readonly UpdateUserProcessor $updateUserProcessor,
         private readonly CreateUserProcessor $createUserProcessor,
@@ -26,6 +34,15 @@ class UserDataProcessor implements ProcessorInterface
     ) {
     }
 
+    /**
+     * The processor executor
+     *
+     * @param mixed $data
+     * @param Operation $operation
+     * @param array $uriVariables
+     * @param array $context
+     * @return object
+     */
     #[\ReturnTypeWillChange]
     public function process(mixed $data, Operation $operation, array $uriVariables = [], array $context = []): object
     {

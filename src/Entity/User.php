@@ -11,18 +11,27 @@ use ApiPlatform\Metadata\Put;
 use ApiPlatform\Metadata\QueryParameter;
 use ApiPlatform\OpenApi\Factory\OpenApiFactory;
 use ApiPlatform\OpenApi\Model;
+use ApiPlatform\Symfony\Security\Exception\AccessDeniedException;
+use App\Dto\User\UserData;
 use App\Repository\UserRepository;
 use App\State\UserDataProcessor;
 use App\State\UserDataProvider;
 use ArrayObject;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Bridge\Doctrine\Validator\Constraints\UniqueEntity;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+use Symfony\Component\Security\Core\User\PasswordAuthenticatedUserInterface;
+use Symfony\Component\Security\Core\User\UserInterface;
 
 #[ORM\Entity(repositoryClass: UserRepository::class)]
+#[ORM\UniqueConstraint(name: 'UNIQUE_USER_LOGIN', fields: ['login'])]
+#[UniqueEntity(fields: ['login'], message: 'There is already an account with this login')]
 #[ApiResource(
     uriTemplate: 'users',
     operations: [
         new Get(
+            stateless: false,
             openapi: new Model\Operation(
                 responses: [
                     Response::HTTP_OK => new Model\Response(
@@ -48,6 +57,9 @@ use Symfony\Component\HttpFoundation\Response;
                     Response::HTTP_BAD_REQUEST => new Model\Response(
                         description: 'The input is invalid.',
                     ),
+                    Response::HTTP_FORBIDDEN => new Model\Response(
+                        description: 'Access denied. You tried to change user data, but it is not from your user.'
+                    ),
                     Response::HTTP_NOT_FOUND => new Model\Response(
                         description: 'The user with provided ID does not exist.'
                     ),
@@ -58,10 +70,13 @@ use Symfony\Component\HttpFoundation\Response;
                 summary: 'Get user data',
                 description: 'Retrieves the user data by provided ID'
             ),
+            security: "is_granted('ROLE_ADMIN') or object.login == user.getLogin()",
             provider: UserDataProvider::class,
             parameters: ['id' => new QueryParameter(schema: ['type' => 'integer', 'minimum' => 1], required: true)]
         ),
         new Post(
+            stateless: false,
+            status: Response::HTTP_OK,
             openapi: new Model\Operation(
                 responses: [
                     Response::HTTP_OK => new Model\Response(
@@ -88,6 +103,9 @@ use Symfony\Component\HttpFoundation\Response;
                     ),
                     Response::HTTP_BAD_REQUEST => new Model\Response(
                         description: 'The input is invalid.',
+                    ),
+                    Response::HTTP_FORBIDDEN => new Model\Response(
+                        description: 'Access denied. You tried to change user data, but it is not from your user.'
                     ),
                     Response::HTTP_NOT_FOUND => new Model\Response(
                         description: 'The user with provided ID does not exist.'
@@ -120,11 +138,17 @@ use Symfony\Component\HttpFoundation\Response;
                     ])
                 )
             ),
+            class: UserData::class,
             normalizationContext: ['api_allow_update' => true],
             denormalizationContext: ['api_allow_update' => true],
+            security: "is_granted('ROLE_ADMIN') or (is_granted('IS_AUTHENTICATED_FULLY') and object != null and object.login == user.getLogin())",
+            read: true,
+            write: true,
+            provider: UserDataProvider::class,
             processor: UserDataProcessor::class
         ),
         new Put(
+            stateless: false,
             openapi: new Model\Operation(
                 responses: [
                     Response::HTTP_OK => new Model\Response(
@@ -175,10 +199,12 @@ use Symfony\Component\HttpFoundation\Response;
                     ])
                 )
             ),
+            security: "is_granted('PUBLIC_ACCESS')",
             processor: UserDataProcessor::class,
             extraProperties: [ OpenApiFactory::OVERRIDE_OPENAPI_RESPONSES => false ]
         ),
         new Delete(
+            stateless: false,
             status: Response::HTTP_OK,
             openapi: new Model\Operation(
                 responses: [
@@ -187,6 +213,9 @@ use Symfony\Component\HttpFoundation\Response;
                     ),
                     Response::HTTP_BAD_REQUEST => new Model\Response(
                         description: 'The input is invalid.',
+                    ),
+                    Response::HTTP_FORBIDDEN => new Model\Response(
+                        description: 'Access denied. Only admin users have permissions to delete other users.'
                     ),
                     Response::HTTP_NOT_FOUND => new Model\Response(
                         description: 'The user with provided ID does not exist.'
@@ -199,25 +228,39 @@ use Symfony\Component\HttpFoundation\Response;
                 description: 'Removes the user by provided ID',
             ),
             description: 'Delete User',
+            security: "is_granted('ROLE_ADMIN')",
             processor: UserDataProcessor::class,
             parameters: ['id' => new QueryParameter(schema: ['type' => 'integer', 'minimum' => 1], required: true)]
         )
+    ],
+    exceptionToStatus: [
+        AccessDeniedException::class => Response::HTTP_FORBIDDEN,
+        AccessDeniedHttpException::class => Response::HTTP_FORBIDDEN
     ]
 )]
-final class User
+final class User implements UserInterface, PasswordAuthenticatedUserInterface
 {
-    #[ORM\Id, ORM\GeneratedValue, ORM\Column]
+    #[ORM\Id, ORM\GeneratedValue, ORM\Column(type: 'integer')]
     #[ApiProperty(identifier: true)]
     private ?int $id = null;
 
-    #[ORM\Column(length: 8)]
+    #[ORM\Column(type: 'string', length: 8, unique: true)]
     private ?string $login = null;
 
-    #[ORM\Column(length: 8, nullable: true)]
+    #[ORM\Column(type: 'string', length: 8)]
     private ?string $phone = null;
 
-    #[ORM\Column(length: 8)]
+    /**
+     * @var string The hashed password
+     */
+    #[ORM\Column(type: 'string', length: 255)]
     private ?string $pass = null;
+
+    /**
+     * @var list<string> The user roles
+     */
+    #[ORM\Column(type: 'json')]
+    private array $roles = [];
 
     public function getId(): ?int
     {
@@ -265,5 +308,63 @@ final class User
         $this->pass = $pass;
 
         return $this;
+    }
+
+    /**
+     * A visual identifier that represents this user.
+     *
+     * @see UserInterface
+     */
+    public function getUserIdentifier(): string
+    {
+        return (string) $this->login;
+    }
+
+    /**
+     * @see UserInterface
+     *
+     * @return list<string>
+     */
+    public function getRoles(): array
+    {
+        $roles = $this->roles;
+        // guarantee every user at least has ROLE_USER
+        $roles[] = 'ROLE_USER';
+
+        return array_unique($roles);
+    }
+
+    /**
+     * @param list<string> $roles
+     */
+    public function setRoles(array $roles): User
+    {
+        $this->roles = $roles;
+
+        return $this;
+    }
+
+    /**
+     * @see PasswordAuthenticatedUserInterface
+     */
+    public function getPassword(): ?string
+    {
+        return $this->pass;
+    }
+
+    public function setPassword(string $password): User
+    {
+        $this->pass = $password;
+
+        return $this;
+    }
+
+    /**
+     * @see UserInterface
+     */
+    public function eraseCredentials(): void
+    {
+        // If you store any temporary, sensitive data on the user, clear it here
+        // $this->plainPassword = null;
     }
 }

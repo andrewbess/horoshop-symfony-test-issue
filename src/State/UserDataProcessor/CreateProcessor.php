@@ -11,6 +11,8 @@ use Doctrine\DBAL\Exception as DBALException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\HttpException;
+use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 use Symfony\Component\Serializer\Encoder\JsonEncoder;
 use Symfony\Component\Serializer\Normalizer\ObjectNormalizer;
 use Symfony\Component\Serializer\Serializer;
@@ -26,12 +28,14 @@ class CreateProcessor
      * @param LoginValidator $userLoginValidator
      * @param PhoneValidator $userPhoneValidator
      * @param PassValidator $userPassValidator
+     * @param UserPasswordHasherInterface $passwordHasher
      * @param EntityManagerInterface $entityManager
      */
     public function __construct(
         private readonly LoginValidator $userLoginValidator,
         private readonly PhoneValidator $userPhoneValidator,
         private readonly PassValidator $userPassValidator,
+        private readonly UserPasswordHasherInterface $passwordHasher,
         private readonly EntityManagerInterface $entityManager
     ) {
     }
@@ -55,6 +59,12 @@ class CreateProcessor
             $this->userPhoneValidator->validate($user->getPhone());
             $this->userPassValidator->validate($user->getPass());
 
+            $hashedPassword = $this->passwordHasher->hashPassword(
+                $user,
+                $user->getPass()
+            );
+            $user->setPass($hashedPassword);
+
             $this->entityManager->persist($user);
             $this->entityManager->flush();
 
@@ -62,13 +72,13 @@ class CreateProcessor
                 id: $user->getId()
             );
         } catch (ConstraintDefinitionException) {
-            return new Response(content: 'Validation error. Please check the input data and try again.', status: Response::HTTP_BAD_REQUEST);
+            throw HttpException::fromStatusCode(statusCode: Response::HTTP_BAD_REQUEST, message: 'Validation error. Please check the input data and try again.');
         } catch (DBALException\UniqueConstraintViolationException) {
-            return new Response(content: 'The user with the same login already exists. Please fix login and try again.', status: Response::HTTP_UNPROCESSABLE_ENTITY);
+            throw HttpException::fromStatusCode(statusCode: Response::HTTP_UNPROCESSABLE_ENTITY, message: 'The user with the same login already exists. Please fix login and try again.');
         } catch (DBALException) {
-            return new Response(content: 'Something went wrong follow data saving. Please try again later.', status: Response::HTTP_UNPROCESSABLE_ENTITY);
+            throw HttpException::fromStatusCode(statusCode: Response::HTTP_UNPROCESSABLE_ENTITY, message: 'Something went wrong follow data saving. Please try again later.');
         } catch (Throwable) {
-            return new Response(content: 'Something went wrong. Please contact the support service.', status: Response::HTTP_INTERNAL_SERVER_ERROR);
+            throw HttpException::fromStatusCode(statusCode: Response::HTTP_INTERNAL_SERVER_ERROR, message: 'Something went wrong. Please contact the support service.');
         }
     }
 }
